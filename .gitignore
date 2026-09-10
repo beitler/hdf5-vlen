@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[oc]
+.venv
+.venv-*/
+
+# Makefile output
+build/
+bin/
+prefix/
+logs/
+
+# scratch
+*.h5

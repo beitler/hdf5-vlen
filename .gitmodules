@@ -1,0 +1,12 @@
+[submodule "third_party/hdf5-2.0.0"]
+	path = third_party/hdf5-2.0.0
+	url = https://github.com/HDFGroup/hdf5.git
+	shallow = true
+[submodule "third_party/hdf5-2.2.0"]
+	path = third_party/hdf5-2.2.0
+	url = https://github.com/HDFGroup/hdf5.git
+	shallow = true
+[submodule "third_party/h5py"]
+	path = third_party/h5py
+	url = https://github.com/h5py/h5py.git
+	shallow = true
