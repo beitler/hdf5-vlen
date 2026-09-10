@@ -207,32 +207,39 @@ and leaves the slow pristine builds alone.
 
 ## Results
 
-`make run` builds everything and then checks each outcome rather than only
-printing it — `*-patched` must be clean, everything else must crash — and exits
-non-zero if any run disagrees:
+`make run` builds everything and then checks each outcome: `*-patched` must be
+clean, everything else must crash.
 
 ```
-C binary (libhdf5 build)         result                 expected?
-2.0.0-plain                      SIGSEGV                ok (bug present)
-2.0.0-asan                       ASan: use-after-free   ok (bug present)
-2.0.0-patched-plain              clean                  ok
-2.0.0-patched-asan               clean                  ok
-2.2.0-plain                      SIGSEGV                ok (bug present)
-2.2.0-asan                       ASan: use-after-free   ok (bug present)
-2.2.0-patched-plain              clean                  ok
-2.2.0-patched-asan               clean                  ok
+C binary (libhdf5 build)         result                     expected?
+2.0.0-plain                      SIGSEGV                    ok (bug present)
+2.0.0-asan                       ASan: heap-use-after-free  ok (bug present)
+2.0.0-patched-plain              clean                      ok
+2.0.0-patched-asan               clean                      ok
+2.2.0-plain                      SIGSEGV                    ok (bug present)
+2.2.0-asan                       ASan: heap-use-after-free  ok (bug present)
+2.2.0-patched-plain              clean                      ok
+2.2.0-patched-asan               clean                      ok
 
-venv (h5py on that libhdf5)      result                 expected?
-2.0.0                            SIGSEGV                ok (bug present)
-2.0.0-patched                    clean                  ok
-2.2.0                            SIGSEGV                ok (bug present)
-2.2.0-patched                    clean                  ok
+venv (h5py on that libhdf5)      result                     expected?
+2.0.0                            SIGSEGV                    ok (bug present)
+2.0.0-patched                    clean                      ok
+2.2.0                            SIGSEGV                    ok (bug present)
+2.2.0-patched                    clean                      ok
 
+per-run output captured in logs/run/
 all runs matched expectations
-```
 
-`.github/workflows/reproducer.yml` runs exactly this, one job per hdf5 version,
-with the four library builds as parallel steps.
+=== sanitizer reports and failure details ===
+
+---- c-2.0.0-asan ----
+==...==ERROR: AddressSanitizer: heap-use-after-free on address 0x...
+READ of size 8 ...
+    #0 ... in H5F_addr_decode src/H5Fint.c:3076
+    #1 ... in H5VL__native_blob_specific src/H5VLnative_blob.c:159
+    ...
+SUMMARY: AddressSanitizer: heap-use-after-free ... in H5F_addr_decode
+```
 
 ## The fix
 

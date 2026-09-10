@@ -2,27 +2,25 @@
 # without AddressSanitizer -- builds h5py from source against each, then runs
 # run-all.sh.
 #
-# run-all.sh is the assertion: every `*-patched` build must be clean and every
-# pristine one must crash, and it exits non-zero otherwise. So this fails both
-# if the fix stops working and if the bug quietly disappears from a pristine
-# build (which would mean an unexpected library got picked up).
-#
-# PARALLELISM. The four library builds are independent, so they run as parallel
-# background steps using the step-level `background:` / `wait:` keys
-# (https://github.blog/changelog/2026-06-25-actions-steps-can-now-be-run-in-parallel/).
-# Each lane is self-contained -- library, then the C binary, then the venv that
-# needs that library -- so no lane waits on another and one `wait:` at the end
-# joins them all.
+# PARALLELISM. The four library builds run in parallel steps:
 #
 #   lane 1  pristine plain  -> bin/vlen_minimal-<v>-plain          + .venv-<v>
 #   lane 2  pristine asan   -> bin/vlen_minimal-<v>-asan
 #   lane 3  patched plain   -> bin/vlen_minimal-<v>-patched-plain  + .venv-<v>-patched
 #   lane 4  patched asan    -> bin/vlen_minimal-<v>-patched-asan
 #
-# The lanes need git worktrees -- the patched hdf5 source, and a per-venv h5py
-# checkout (setuptools builds inside its source tree, so two venv builds sharing
-# one checkout collide). `git worktree add` also takes a repository lock, so
-# `make sources` creates them all in a serial step before the lanes start.
+# LOGS. 
+#
+#   logs/environment.txt      toolchain versions and the pinned submodule commits
+#   logs/lane-*.log           each build lane's make output
+#   logs/cmake-*.log          cmake configure, per library build (written by the Makefile)
+#   logs/build-*.log          cmake build + install, per library (ditto)
+#   logs/built.txt            what existed before the reproducer ran
+#   logs/run-all.txt          the results table plus the sanitizer reports
+#   logs/run/<label>.log      raw stdout+stderr of one reproducer run
+#
+# The job summary gets the results table, and the AddressSanitizer reports
+# below it in a collapsed <details> block.
 
 name: reproducer
 
@@ -59,7 +57,14 @@ jobs:
       - name: Record the pinned commits
         id: pins
         run: |
-          git submodule status
+          mkdir -p logs
+          {
+            echo "commit:   $GITHUB_SHA"
+            echo "runner:   $(uname -srm), $(nproc) cores"
+            echo
+            echo "submodules:"
+            git submodule status
+          } | tee logs/environment.txt
           echo "hdf5=$(git -C third_party/hdf5-${{ matrix.hdf5 }} rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "h5py=$(git -C third_party/h5py rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -74,6 +79,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cmake build-essential
+          {
+            echo
+            echo "toolchain:"
+            cc --version | head -1
+            cmake --version | head -1
+          } | tee -a logs/environment.txt
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
@@ -83,19 +94,6 @@ jobs:
       - name: Install the Python the venvs are built with
         run: uv python install 3.14
 
-      # Only the installed prefixes are cached -- they are what the binaries
-      # link against. The rpaths baked into them are absolute, which is fine
-      # because the workspace path is stable across runs.
-      #
-      # On a hit this restores prefix/ and the four build lanes below become
-      # no-ops: the library targets take their source tree as an ORDER-ONLY
-      # prerequisite (see the Makefile), so a worktree recreated in this run
-      # does not invalidate a restored library.
-      #
-      # Deliberately no `restore-keys`. The key is the only thing tying a cached
-      # library to the commit, patch and flags that produced it; a partial-match
-      # restore would hand the lanes a stale prefix that make would then treat
-      # as up to date, and the job would silently test the wrong library.
       - name: Cache libhdf5 installs
         id: cache-prefix
         uses: actions/cache@v4
@@ -114,60 +112,87 @@ jobs:
             echo "cache miss -- building libhdf5 from source"
           fi
 
-      # Serial on purpose -- see the note at the top of this file.
       - name: Create the git worktrees the lanes build from
-        run: make VERSIONS=${{ matrix.hdf5 }} sources
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          make VERSIONS=${{ matrix.hdf5 }} sources 2>&1 | tee logs/sources.log
 
       - name: 'Lane 1: pristine, plain -- library, binary, venv'
         id: lane-plain
         background: true
         run: |
+          set -o pipefail
+          mkdir -p logs
           make VERSIONS=${{ matrix.hdf5 }} JOBS=$LANE_JOBS \
                bin/vlen_minimal-${{ matrix.hdf5 }}-plain \
-               .venv-${{ matrix.hdf5 }}/.built
+               .venv-${{ matrix.hdf5 }}/.built 2>&1 | tee logs/lane-plain.log
 
       - name: 'Lane 2: pristine, AddressSanitizer -- library, binary'
         id: lane-asan
         background: true
         run: |
+          set -o pipefail
+          mkdir -p logs
           make VERSIONS=${{ matrix.hdf5 }} JOBS=$LANE_JOBS \
-               bin/vlen_minimal-${{ matrix.hdf5 }}-asan
+               bin/vlen_minimal-${{ matrix.hdf5 }}-asan 2>&1 | tee logs/lane-asan.log
 
       - name: 'Lane 3: patched, plain -- library, binary, venv'
         id: lane-patched-plain
         background: true
         run: |
+          set -o pipefail
+          mkdir -p logs
           make VERSIONS=${{ matrix.hdf5 }} JOBS=$LANE_JOBS \
                bin/vlen_minimal-${{ matrix.hdf5 }}-patched-plain \
-               .venv-${{ matrix.hdf5 }}-patched/.built
+               .venv-${{ matrix.hdf5 }}-patched/.built 2>&1 | tee logs/lane-patched-plain.log
 
       - name: 'Lane 4: patched, AddressSanitizer -- library, binary'
         id: lane-patched-asan
         background: true
         run: |
+          set -o pipefail
+          mkdir -p logs
           make VERSIONS=${{ matrix.hdf5 }} JOBS=$LANE_JOBS \
-               bin/vlen_minimal-${{ matrix.hdf5 }}-patched-asan
+               bin/vlen_minimal-${{ matrix.hdf5 }}-patched-asan 2>&1 | tee logs/lane-patched-asan.log
 
       - name: Join the four build lanes
         wait: [lane-plain, lane-asan, lane-patched-plain, lane-patched-asan]
 
       - name: Show what got built
         run: |
-          ls -1 bin/
-          ls -d .venv-* || true
-          df -h . | tail -1
+          {
+            ls -1 bin/
+            ls -d .venv-* || true
+            df -h . | tail -1
+          } | tee logs/built.txt
 
       - name: Run the reproducer against every build
         run: |
+          mkdir -p logs
           rc=0
-          ./run-all.sh > run-all.txt 2>&1 || rc=$?
+          ./run-all.sh > logs/run-all.txt 2>&1 || rc=$?
+          cat logs/run-all.txt
+
+          marker='=== sanitizer reports and failure details ==='
           {
             echo '### hdf5 ${{ matrix.hdf5 }}'
             echo '```'
-            cat run-all.txt
+            awk -v m="$marker" 'index($0, m) { exit } { print }' logs/run-all.txt
             echo '```'
+            if grep -qF "$marker" logs/run-all.txt; then
+              echo '<details><summary>AddressSanitizer reports and failure details</summary>'
+              echo
+              echo '```'
+              awk -v m="$marker" 'seen; index($0, m) { seen = 1 }' logs/run-all.txt
+              echo '```'
+              echo
+              echo '</details>'
+            fi
+            echo
+            echo "Full logs -- cmake, build, and the raw output of every run --"
+            echo "are in the \`logs-hdf5-${{ matrix.hdf5 }}\` artifact for this job."
           } >> "$GITHUB_STEP_SUMMARY"
-          cat run-all.txt
           exit $rc
 
       - name: Confirm the submodules were not modified
@@ -182,12 +207,10 @@ jobs:
           echo "all submodules pristine"
 
       - name: Upload logs
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: logs-hdf5-${{ matrix.hdf5 }}
-          path: |
-            logs/
-            run-all.txt
+          path: logs/
           if-no-files-found: warn
           retention-days: 7
